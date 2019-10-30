@@ -22,7 +22,7 @@ def myfmt(x):
 # Check for qualifying, then if any pass, add them to the ranking
 # As qualifying candidates are found, add their (r,s,t) ratings
 # to the ratings dict
-def checkQ(r,s,T,MX,remaining,ratings,ranking):
+def find_qualifying_at_rating(r,s,T,MX,remaining,ratings,ranking):
     Q = set([])
     for c in remaining:
         t = T[c]
@@ -62,13 +62,21 @@ def median_rating(maxscore, quota, ncands, remaining, S,
     # r is the rating level at which
     # "t", the total number of ballots rating candidate c at level s and above
     # exceeds the adjusted quota
+    #
+    # For ER-Bucklin, r == s and the total t exceeds the quota.
+    # For Majority Judgment, there are two tests.  First, whether
+    # t exceeds the quota with r == s, and second, whether t exceeds the quota
+    # with r reduced by one, s left at previous r, and the quota adjusted downward
+    # by S[r,c]/2.  If that qualifying test is passed, it means that
+    # the non-quota-passing total at level s is closer to the quota threshold than
+    # the quota-passing total at level r.  Then (r,s,t) is the Majority Grade.
 
     # If r equals zero, then candidate c was not able to pass any qualifying threshold
     # and was sorted at the end of the ranking by total approval.
     while (len(remaining) > 0):
         T += S[r]            # Note that the S[0] all zeros, by construction.
         s = r                # "s" is used to save the ratings level used in T
-        checkQ(r,s,T,MX,remaining,ratings,ranking)
+        find_qualifying_at_rating(r,s,T,MX,remaining,ratings,ranking)
 
         r -= 1
         if use_mj and (len(remaining) > 0):
@@ -76,7 +84,7 @@ def median_rating(maxscore, quota, ncands, remaining, S,
             # the unadjusted quota would be exceeded at the new decremented r,
             # but the previous approval count would be closer to the quota than that
             # of the next level down.
-            checkQ(r,s,T,MX - S[r]/2,remaining,ratings,ranking)
+            find_qualifying_at_rating(r,s,T,MX - S[r]/2,remaining,ratings,ranking)
 
         if r == 0:              # Ensure termination
             MX = np.zeros((ncands))

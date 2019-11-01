@@ -19,79 +19,47 @@ def myfmt(x):
         fmt = "{:.5g}"
     return fmt.format(x)
 
-# Check for qualifying, then if any pass, add them to the ranking
-# As qualifying candidates are found, add their (r,s,t) ratings
-# to the ratings dict
-def find_qualifying_at_rating(r,s,T,MX,remaining,ratings,ranking):
-    Q = set([])
-    for c in remaining:
-        t = T[c]
-        mx = MX[c]
-        if (mx <= 0) or (t > mx):
-            Q.add(c)
-            ratings[c] = (r,s,t)
-
-    if len(Q) > 0:
-        # Remove all elements of Q from remaining
-        remaining.difference_update(Q)
-        ranking += sorted(Q,key=(lambda c:T[c]),reverse=True)
-
 def tabulate_score_from_ratings(ballots,weight,maxscore,ncands):
+    """tabulate score from ratings"""
     maxscorep1 = maxscore + 1
     S = np.zeros((maxscorep1,ncands))
     for ballot, w in zip(ballots,weight):
         for r in range(1,maxscorep1):
             S[r] += np.where(ballot==r,w,0)
-    return(S)
+    # Cumulative sum array, S[r:,...].cumsum(axis=0)
+    T = np.array([t
+                  for t in reversed(np.array([s
+                                              for s in reversed(S)]).cumsum(axis=0))])
+    return(S,T)
     
-def median_rating(maxscore, quota, ncands, remaining, S,
-                  use_mj=True):
-    """Returns winner based on median rating method"""
-    r = maxscore
-    T = np.zeros((ncands))
-    MX = np.ones((ncands)) * quota
-    ratings = dict()
-    ranking = []
-    # Ratings significance:
-    #
-    # ratings[c] = (r,s,t)
-    #
-    # In each triple (r,s,t) for candidate c:
-    #
-    # When r is greater than 0,
-    # r is the rating level at which
-    # "t", the total number of ballots rating candidate c at level s and above
-    # exceeds the adjusted quota
-    #
-    # For ER-Bucklin, r == s and the total t exceeds the quota.
-    # For Majority Judgment, there are two tests.  First, whether
-    # t exceeds the quota with r == s, and second, whether t exceeds the quota
-    # with r reduced by one, s left at previous r, and the quota adjusted downward
-    # by S[r,c]/2.  If that qualifying test is passed, it means that
-    # the non-quota-passing total at level s is closer to the quota threshold than
-    # the quota-passing total at level r.  Then (r,s,t) is the Majority Grade.
-
-    # If r equals zero, then candidate c was not able to pass any qualifying threshold
-    # and was sorted at the end of the ranking by total approval.
-    while (len(remaining) > 0):
-        T += S[r]            # Note that the S[0] all zeros, by construction.
-        s = r                # "s" is used to save the ratings level used in T
-        find_qualifying_at_rating(r,s,T,MX,remaining,ratings,ranking)
-
-        r -= 1
-        if use_mj and (len(remaining) > 0):
-            # for Majority Judgment, the adjusted quota is the level at which
-            # the unadjusted quota would be exceeded at the new decremented r,
-            # but the previous approval count would be closer to the quota than that
-            # of the next level down.
-            find_qualifying_at_rating(r,s,T,MX - S[r]/2,remaining,ratings,ranking)
-
-        if r == 0:              # Ensure termination
-            MX = np.zeros((ncands))
-    
+def median_rating(maxscore, quota, ncands, remaining, S, T, use_mj=True):
+    """Median rating single-winner, Majority Judgment (default) or ER-Bucklin-ratings"""
+    ratings = dict() 
+    scores = np.arange(maxscore+1)
+    if use_mj:
+        dist = abs(T-quota)
+        for c in remaining:
+            ss = S[...,c]
+            tt = T[...,c]
+            dd = dist[...,c]
+            for r in range(maxscore,-1,-1):
+                if tt[r] > quota:
+                    break
+                
+            ratings[c] = (r, *[(x,tt[x])
+                               for x in np.array(sorted(np.compress(ss>0,scores),
+                                                        key=(lambda x:dd[x])))])
+    else:                       # ER-Bucklin
+        for c in remaining:
+            tt = T[...,c]
+            for r in range(maxscore,-1,-1):
+                if tt[r] > quota:
+                    break
+            ratings[c] = (r,tt[r])
+            
+    ranking = sorted(remaining,key=(lambda c:ratings[c]),reverse=True)
     winner = ranking[0]
-    r, s, t = ratings[winner]
-    winsum = S[r:,winner].sum()
+    winsum = T[ratings[winner][0],winner]
 
     if winsum >= quota:
         factor = (1. - quota/winsum)
@@ -133,17 +101,13 @@ def mrrv(ballots, weights, cnames, numseats,
         # ----------------------------------------------------------------------
         # Tabulation:
         # ----------------------------------------------------------------------
-        S = tabulate_score_from_ratings(ballots,weights,maxscore,ncands)
-
-        # Determine the seat winner using a median rating method:
-        remaining = set(cands)
-        
+        # Score and Cumulative Score arrays (summing downward from maxscore)
+        S, T = tabulate_score_from_ratings(ballots,weights,maxscore,ncands)
         (winner,
          winsum,
          factor,
          ranking,
-         ratings) = median_rating(maxscore, quota, ncands, remaining, S,
-                                  use_mj=use_mj)
+         ratings) = median_rating(maxscore, quota, ncands, cands, S, T, use_mj=use_mj)
 
         winner_quota_threshold = ratings[winner][0]
         
@@ -152,10 +116,17 @@ def mrrv(ballots, weights, cnames, numseats,
             print("\n-----------\n*** Seat {}: {}\n-----------\n".format(seat+1,cnames[winner]))
             if verbose > 1:
                 print("MR ranking for this seat:")
-                for c in ranking:
-                    r,s,t = ratings[c]
-                    u = S[r:,c].sum()
-                    print("\t{}:({},{},{},{})".format(cnames[c],r,s,myfmt(t),myfmt(u)))
+                if use_mj:
+                    for c in ranking:
+                        r, *rest = ratings[c]
+                        print("\t{}:({},{})".format(cnames[c],r,
+                                                    ",".join(["({},{})".format(s,myfmt(t))
+                                                              for s, t in rest])))
+                else:
+                    for c in ranking:
+                        r, t = ratings[c]
+                        print("\t{}:({},{})".format(cnames[c],r,myfmt(t)))
+
                 print("")
 
         if (seat < numseats):

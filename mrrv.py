@@ -36,7 +36,7 @@ def median_rating(maxscore, quota, ncands, remaining, S, T, use_mj=True):
     """Median rating single-winner, Majority Judgment (default) or ER-Bucklin-ratings"""
     ratings = dict() 
     scores = np.arange(maxscore+1)
-    if use_mj:
+    if use_mj:                  # Majority Judgment
         dist = abs(T-quota)
         for c in remaining:
             ss = S[...,c]

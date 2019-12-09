@@ -4,10 +4,16 @@ from ballot_tools.csvtoballots import *
 from collections import deque
 from math import log10
 __doc__ = """
-MRRV: Median Rating (droop-quota-based) Reweighted Voting.
+AQTRV: Approval quota threshold (droop-quota-based) Reweighted Voting.
 
-Run median ratings method (MJ or ER-Bucklin) to elect <numseats> winners
-in a Droop proportional multiwnner election.  Default method is Majority Judgment.
+Run median ratings style approval-quota-threshold method 
+(MJ or ER-Bucklin style) to elect <numseats> winners in a Droop 
+proportional multiwnner election.
+
+Default method is MJ-style, quota-centered-median rating.
+
+Optionally, one can add a second-level tie-breaker of the
+average score in the top two quota score blocks.
 """
 def droopquota(n,m):
     return(n/(m+1))
@@ -32,30 +38,62 @@ def tabulate_score_from_ratings(ballots,weight,maxscore,ncands):
                                               for s in reversed(S)]).cumsum(axis=0))])
     return(S,T)
     
-def median_rating(maxscore, quota, ncands, remaining, S, T, use_mj=True):
-    """Median rating single-winner, Majority Judgment (default) or ER-Bucklin-ratings"""
-    ratings = dict() 
+def aqt(maxscore, quota, ncands, remaining, S, T, use_mj=True, use_two_q=False):
+    """Approval Quota Threshold single-winner method, using either Majority Judgment style
+    tie-breaker for the approval quota threshold (default) or ER-Bucklin-ratings style"""
+    ratings = dict()
+    twoq = quota * 2
+
+    for c in remaining:
+        r1q_unset = True
+        r1q = 0
+        r2q = 0
+        tt_surplus = 0.
+        ss = S[...,c]
+        tt = T[...,c]
+        s = 0
+        for r in range(maxscore,-1,-1):
+            s += ss[r] * r
+
+            if r1q_unset and (tt[r] > quota):
+                r1q_unset = False
+                r1q = r
+                if not use_two_q:
+                    # If not using the two-quota average score tie-breaker,
+                    # leading part of the AQT score is the quota threshold rating
+                    ratings[c] = (r1q,)
+                    break
+                
+            if tt[r] > twoq:
+                r2q = r
+                tt_surplus = tt[r2q] - twoq
+                break
+
+        if use_two_q:
+            # leading part of AQT score is quota threshold rating and average score
+            # in the top two quota blocks
+            ratings[c] = (r1q, (s - tt_surplus * r) / twoq )
+        elif r1q_unset:
+            # If not using the two-quota average score tie-breaker,
+            # leading part of the AQT score is the quota threshold rating
+            ratings[c] = (r1q,)
+            
     scores = np.arange(maxscore+1)
-    if use_mj:                  # Majority Judgment
-        dist = abs(T-quota)
+    if use_mj:                  # Majority Judgment style approval quota threshold
         for c in remaining:
             ss = S[...,c]
             tt = T[...,c]
-            dd = dist[...,c]
-            for r in range(maxscore,-1,-1):
-                if tt[r] > quota:
-                    break
+            dd = abs(tt - quota)
                 
-            ratings[c] = (r, *[(x,tt[x])
-                               for x in np.array(sorted(np.compress(ss>0,scores),
-                                                        key=(lambda x:dd[x])))])
-    else:                       # ER-Bucklin
+            ratings[c] = (*list(ratings[c]),
+                          *[(x,tt[x])
+                            for x in np.array(sorted(np.compress(ss>0,scores),
+                                                     key=(lambda x:dd[x])))])
+    else:                       # ER-Bucklin-ratings style approval quota threshold
         for c in remaining:
             tt = T[...,c]
-            for r in range(maxscore,-1,-1):
-                if tt[r] > quota:
-                    break
-            ratings[c] = (r,tt[r])
+            ratings[c] = (*list(ratings[c]),
+                          tt[r])
             
     ranking = sorted(remaining,key=(lambda c:ratings[c]),reverse=True)
     winner = ranking[0]
@@ -68,10 +106,16 @@ def median_rating(maxscore, quota, ncands, remaining, S, T, use_mj=True):
         
     return(winner,winsum,factor,ranking,ratings)
 
-def mrrv(ballots, weights, cnames, numseats,
-         verbose=0, use_mj=True):
-    """Run median ratings method (MJ or Bucklin) to elect <numseats> winners
-    in a Droop proportional multiwnner election"""
+def aqtpr(ballots, weights, cnames, numseats,
+         verbose=0, use_mj=True, use_two_q=False):
+    """
+    Run median ratings-style approval quota threshold method
+    (MJ-style or Bucklin-style) to elect <numseats> winners
+    in a Droop proportional multiwnner election.  Optionally determine
+    average rating centered at quota below top rating, using average score
+    in the top two quota blocks, which reduces to median rating tie-broken
+    by Score in the single winner case.
+    """
     
     numballots, numcands = np.shape(ballots)
     ncands = numcands
@@ -107,7 +151,8 @@ def mrrv(ballots, weights, cnames, numseats,
          winsum,
          factor,
          ranking,
-         ratings) = median_rating(maxscore, quota, ncands, cands, S, T, use_mj=use_mj)
+         ratings) = aqt(maxscore, quota, ncands, cands, S, T,
+                        use_mj=use_mj, use_two_q=use_two_q)
 
         winner_quota_threshold = ratings[winner][0]
         
@@ -117,16 +162,27 @@ def mrrv(ballots, weights, cnames, numseats,
             if verbose > 1:
                 print("MR ranking for this seat:")
                 if use_mj:
-                    for c in ranking:
-                        r, *rest = ratings[c]
-                        print("\t{}:({},{})".format(cnames[c],r,
-                                                    ",".join(["({},{})".format(s,myfmt(t))
-                                                              for s, t in rest])))
+                    if use_two_q:
+                        for c in ranking:
+                            r, twoqavg, *rest = ratings[c]
+                            print("\t{}:({},{},{})".format(cnames[c],r,myfmt(twoqavg),
+                                                           ",".join(["({},{})".format(s,myfmt(t))
+                                                                     for s, t in rest])))
+                    else:
+                        for c in ranking:
+                            r, *rest = ratings[c]
+                            print("\t{}:({},{})".format(cnames[c],r,
+                                                        ",".join(["({},{})".format(s,myfmt(t))
+                                                                  for s, t in rest])))
                 else:
-                    for c in ranking:
-                        r, t = ratings[c]
-                        print("\t{}:({},{})".format(cnames[c],r,myfmt(t)))
-
+                    if use_two_q:
+                        for c in ranking:
+                            r, twoqavg, t = ratings[c]
+                            print("\t{}:({},{},{})".format(cnames[c],r,myfmt(twoqavg),myfmt(t)))
+                    else:
+                        for c in ranking:
+                            r, t = ratings[c]
+                            print("\t{}:({},{})".format(cnames[c],r,myfmt(t)))
                 print("")
 
         if (seat < numseats):
@@ -182,7 +238,10 @@ def main():
                         help="CSV file type, either 'score' or 'rcv' [default: 'score']")
     parser.add_argument("-u", "--use_bucklin", action='store_true',
                         default=False,
-                        help="Toggle from Majority Judgment to ER-Bucklin [default: False]")
+                        help="Toggle from MJ-style to ER-Bucklin-style tie-breaker [default: False]")
+    parser.add_argument("-q", "--use_two_q", action='store_true',
+                        default=False,
+                        help="Toggle from quotidian rating to two-quota average score [default: False]")
     parser.add_argument('-v', '--verbose', action='count',
                         default=0,
                         help="Add verbosity. Can be repeated to increase level. [default: 0]")
@@ -204,13 +263,18 @@ def main():
         for ballot, w in zip(ballots,weights):
             print(ff.format(w),ballot)
 
-    method_type = {True:"ER-Bucklin(ratings)",False:"Majority Judgment"}[args.use_bucklin]
+    method_type = {True:"ER-Bucklin(ratings)",
+                   False:"Majority Judgment"}[args.use_bucklin]
+    average_type = {True:"Top-two-quota average score",
+                    False:"Quota-centered median rating"}[args.use_two_q]
     print("MR method:", method_type)
+    print("Avg method:", average_type)
     use_mj = not args.use_bucklin
-    winners = mrrv(ballots, weights, cnames,
-                   args.seats,
-                   verbose=args.verbose,
-                   use_mj=use_mj)
+    winners = aqtpr(ballots, weights, cnames,
+                    args.seats,
+                    verbose=args.verbose,
+                    use_mj=use_mj,
+                    use_two_q=args.use_two_q)
     print("- "*30)
 
     if args.seats == 1:
@@ -218,8 +282,8 @@ def main():
     else:
         winfmt = "{} winners".format(args.seats)
 
-    print("\nMethod:",method_type)
-    print("MRRV returns {}:".format(winfmt),", ".join([cnames[q] for q in winners]))
+    print("\nMethod:",method_type, ", Averaging:", average_type)
+    print("AQTRV returns {}:".format(winfmt),", ".join([cnames[q] for q in winners]))
 
     return
 

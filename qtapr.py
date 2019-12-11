@@ -4,16 +4,13 @@ from ballot_tools.csvtoballots import *
 from collections import deque
 from math import log10
 __doc__ = """
-AQTRV: Approval quota threshold (droop-quota-based) Reweighted Voting.
+QTAR-PR: Quota-Threshold Approval PR.
 
-Run median ratings style approval-quota-threshold method 
-(MJ or ER-Bucklin style) to elect <numseats> winners in a Droop 
-proportional multiwnner election.
+Run quota-threshold approval (MJ or ER-Bucklin style) to elect
+<numseats> winners in a Droop proportional multiwnner election.
 
-Default method is MJ-style, quota-centered-median rating.
-
-Optionally, one can add a second-level tie-breaker of the
-average score in the top two quota score blocks.
+Default method is MJ-style, removing votes at the quota-threshold
+approval rating until a different rating is found
 """
 def droopquota(n,m):
     return(n/(m+1))
@@ -38,9 +35,11 @@ def tabulate_score_from_ratings(ballots,weight,maxscore,ncands):
                                               for s in reversed(S)]).cumsum(axis=0))])
     return(S,T)
     
-def aqt(maxscore, quota, ncands, remaining, S, T, use_mj=True, use_two_q=False):
-    """Approval Quota Threshold single-winner method, using either Majority Judgment style
-    tie-breaker for the approval quota threshold (default) or ER-Bucklin-ratings style"""
+def qta(maxscore, quota, ncands, remaining, S, T, use_mj=True, use_two_q=False):
+    """Quota Threshold approval single-winner method, using either
+    Majority Judgment style tie-breaker for the approval quota
+    threshold (default) or ER-Bucklin-ratings style
+    """
     ratings = dict()
     twoq = quota * 2
 
@@ -106,15 +105,11 @@ def aqt(maxscore, quota, ncands, remaining, S, T, use_mj=True, use_two_q=False):
         
     return(winner,winsum,factor,ranking,ratings)
 
-def aqtpr(ballots, weights, cnames, numseats,
-         verbose=0, use_mj=True, use_two_q=False):
-    """
-    Run median ratings-style approval quota threshold method
-    (MJ-style or Bucklin-style) to elect <numseats> winners
-    in a Droop proportional multiwnner election.  Optionally determine
-    average rating centered at quota below top rating, using average score
-    in the top two quota blocks, which reduces to median rating tie-broken
-    by Score in the single winner case.
+def qtapr(ballots, weights, cnames, numseats,
+           verbose=0, use_mj=True, use_two_q=False):
+    """Run quota threshold approval rating method (MJ-style or
+    Bucklin-style) to elect <numseats> winners in a Droop proportional
+    multiwnner election.
     """
     
     numballots, numcands = np.shape(ballots)
@@ -160,7 +155,7 @@ def aqtpr(ballots, weights, cnames, numseats,
         if verbose:
             print("\n-----------\n*** Seat {}: {}\n-----------\n".format(seat+1,cnames[winner]))
             if verbose > 1:
-                print("MR ranking for this seat:")
+                print("QTAR ranking for this seat:")
                 if use_mj:
                     if use_two_q:
                         for c in ranking:
@@ -208,7 +203,7 @@ def aqtpr(ballots, weights, cnames, numseats,
                                               S[-1:0:-1,winner])])))
             print("After reweighting ballots:")
             print("\tQuota:  {}%".format(myfmt(quota/numvotes_orig*100)))
-            print(("\tWinner's approval threshold score "
+            print(("\tWinner's quota approval threshold rating "
                    "before reweighting:  {}%").format(myfmt((winsum/numvotes_orig)*100)))
             print("\tReweighting factor:  ", factor)
             print(("\tPercentage of vote remaining "
@@ -218,6 +213,12 @@ def aqtpr(ballots, weights, cnames, numseats,
         print("- "*30 + "\nReweighting factors for all seat winners:")
         for w, f, qt in zip(winners,factor_array,qthresh_array):
             print("\t{} : ({}, {})".format(cnames[w], myfmt(qt), myfmt(f)))
+
+    if verbose > 3 and numseats > 1:
+        print("- "*30 + "\nRemaining ballots and weights:")
+        print("{},{}".format("weight",','.join(cnames)))
+        for w, ballot in zip(weights,ballots):
+            print("{},{}".format(myfmt(w),','.join([str(b) for b in ballot])))
 
     return(winners)
 
@@ -253,7 +254,7 @@ def main():
     ballots, weights, cnames = csvtoballots(args.inputfile,ftype=ftype)
 
     print("- "*30)
-    print("MEDIAN RATINGS QUOTA-BASED REWEIGHTED VOTING (MRRV)")
+    print("QUOTA-THRESHOLD APPROVAL PROPORTIONAL REPRESENTATION (QTA-PR)")
     if args.verbose > 3:
         print("- "*30)
         # Figure out the width of the weight field, use it to create the format
@@ -267,10 +268,10 @@ def main():
                    False:"Majority Judgment"}[args.use_bucklin]
     average_type = {True:"Top-two-quota average score",
                     False:"Quota-centered median rating"}[args.use_two_q]
-    print("MR method:", method_type)
+    print("QTA method:", method_type)
     print("Avg method:", average_type)
     use_mj = not args.use_bucklin
-    winners = aqtpr(ballots, weights, cnames,
+    winners = qtapr(ballots, weights, cnames,
                     args.seats,
                     verbose=args.verbose,
                     use_mj=use_mj,
@@ -283,7 +284,7 @@ def main():
         winfmt = "{} winners".format(args.seats)
 
     print("\nMethod:",method_type, ", Averaging:", average_type)
-    print("AQTRV returns {}:".format(winfmt),", ".join([cnames[q] for q in winners]))
+    print("QTAPR returns {}:".format(winfmt),", ".join([cnames[q] for q in winners]))
 
     return
 
